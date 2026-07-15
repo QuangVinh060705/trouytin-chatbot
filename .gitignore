@@ -1,0 +1,13 @@
+# Bi mat - KHONG commit
+.env
+
+# Python
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# ChromaDB co the sinh lai tu ingest; giu neu muon deploy kem, bo comment neu khong
+# chroma_db/
