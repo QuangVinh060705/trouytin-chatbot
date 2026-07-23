@@ -1,0 +1,11 @@
+# Environment variables
+.env
+*.env
+.env.*
+!.env.example
+chatbot_api/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
