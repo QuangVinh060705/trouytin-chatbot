@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controllers.chatbotAppController import router as chatbot_router
+from controllers.ingestController import router as ingest_router
 
 app = FastAPI(
     title="Building RAG Chatbot API",
@@ -19,6 +20,7 @@ app.add_middleware(
 )
 
 app.include_router(chatbot_router)
+app.include_router(ingest_router)
 
 @app.get("/health", tags=["System"])
 async def health_check():

@@ -1,0 +1,26 @@
+# Chatbot RAG (FastAPI + LangChain + ChromaDB + Groq).
+# Cai: py -m pip install -r requirements.txt
+
+# Web API
+fastapi
+uvicorn
+
+# Cau hinh
+python-dotenv
+
+# LangChain + RAG
+langchain-core
+langchain-community
+langchain-chroma
+langchain-huggingface
+langchain-groq
+
+# Vector store + embedding
+chromadb
+sentence-transformers
+
+# BM25 keyword retriever (BM25Retriever cua langchain_community can goi nay)
+rank-bm25
+
+# HTTP client cho script ingest goi Prop-Tech backend.
+requests
