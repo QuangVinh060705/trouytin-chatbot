@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -31,3 +32,31 @@ class ChatResponse(BaseModel):
 
 class ClearChatRequest(BaseModel):
     session_id: str = Field(default="default", min_length=1, max_length=100)
+
+
+class ChatbotAdminMessage(BaseModel):
+    id: int
+    role: str
+    content: str
+    response_type: str | None = None
+    created_at: datetime
+
+
+class ChatbotAdminConversation(BaseModel):
+    session_id: str
+    last_message: str | None = None
+    message_count: int
+    updated_at: datetime
+    status: str
+
+
+class ChatbotAdminConversationListResponse(BaseModel):
+    items: list[ChatbotAdminConversation]
+    page: int
+    size: int
+    total: int
+
+
+class ChatbotAdminMessageListResponse(BaseModel):
+    session_id: str
+    items: list[ChatbotAdminMessage]

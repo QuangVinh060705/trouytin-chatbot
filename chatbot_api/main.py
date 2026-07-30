@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from controllers.admin_chatbot_controller import router as admin_chatbot_router
 from controllers.area_controller import router as area_router
 from controllers.chatbot_controller import router as chatbot_router
 
@@ -20,6 +21,7 @@ app.add_middleware(
 
 app.include_router(chatbot_router)
 app.include_router(area_router)
+app.include_router(admin_chatbot_router)
 
 
 @app.get("/health")
