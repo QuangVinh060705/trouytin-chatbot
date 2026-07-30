@@ -160,7 +160,7 @@ $env:PYTHONPATH="D:\LinkDoAn\chatApp"
 
 cd .\chatApp
 ..\.venv\Scripts\python.exe -m uvicorn api.main:app `
-  --host 0.0.0.0 --port 8000 --reload
+  --host 0.0.0.0 --port 8000
 ```
 
 Linux/macOS:
@@ -171,10 +171,20 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m cli.migrate
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 Lần chạy đầu cần tải model `BAAI/bge-m3`.
+
+**Không dùng `--reload` cho service này.** `core/models.py` khởi tạo embedding
+(BAAI/bge-m3), Chroma và Groq client ở mức module — chủ đích chỉ chạy 1 lần
+khi process khởi động vì rất tốn thời gian (hàng chục request kiểm tra cache
+tới huggingface.co). Nếu chạy với `--reload`, mỗi lần watcher phát hiện file
+`.py` thay đổi (kể cả trong lúc đang xử lý request) sẽ kill worker và import
+lại toàn bộ app — khiến 1 request tạo ra rất nhiều log lặp lại, và nếu reload
+xảy ra giữa lúc đang xử lý request thì request đó bị ngắt (đây là nguyên nhân
+phổ biến khiến chatbot "bị lỗi" dù từng bước riêng lẻ đều log thành công). Khi
+cần sửa code, dừng và chạy lại thủ công thay vì bật `--reload`.
 
 Migration tạo:
 
