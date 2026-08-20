@@ -25,3 +25,8 @@ app.include_router(area_router)
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.head("/health")
+def health_head():
+    return
