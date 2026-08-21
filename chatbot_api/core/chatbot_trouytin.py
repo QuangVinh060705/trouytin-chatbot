@@ -1,13 +1,13 @@
 import os
 import json
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from langchain_groq import ChatGroq
 
@@ -17,28 +17,33 @@ from .database import create_database_engine, get_database_schema
 
 load_dotenv()
 
+# Thư mục gốc của project (chatbot_api/), dùng để mở file dữ liệu kèm theo code
+# bằng đường dẫn TUYỆT ĐỐI thay vì phụ thuộc thư mục làm việc hiện tại.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # --- CÁC PYDANTIC MODELS ---
-class ModifierAction(str, Enum):
-    ADD = "add"
-    REMOVE = "remove"
-    CLEAR = "clear"
-
-class ModifiedField(BaseModel):
-    values: List[str] = Field(default_factory=list, description="Danh sách các mục được chỉ định")
-    action: ModifierAction = Field(default=ModifierAction.ADD, description="Hành động cụ thể tác động lên danh sách")
-
+# LƯU Ý: Bot xử lý MỖI tin nhắn ĐỘC LẬP (1-1), không cộng dồn tiêu chí giữa
+# các lượt chat, nên search_intent chỉ cần phản ánh đúng nội dung của riêng
+# tin nhắn hiện tại.
 class SearchIntent(BaseModel):
-    reset_filters: bool = Field(
-        default=False,
+    gia_min: int | None = Field(
+        default=None,
         description=(
-            "True khi người dùng muốn xem tất cả phòng, tìm lại từ đầu, bỏ tiêu chí cũ "
-            "hoặc mở rộng tìm kiếm sau khi không có kết quả."
+            "Giá thuê tối thiểu khách yêu cầu (VND). CHỈ điền trường này khi khách "
+            "dùng từ chỉ CẬN DƯỚI: 'trên X', 'hơn X', 'từ X trở lên', 'tối thiểu X', "
+            "'ít nhất X'. Quy đổi các từ viết tắt như '3t', '3tr', '3 triệu' thành số "
+            "nguyên: 3000000."
         ),
     )
-    gia_min: int | None = Field(default=None, description="Giá thuê tối thiểu khách yêu cầu (VND).")
     gia_max: int | None = Field(
-        default=None, 
-        description="Giá thuê tối đa khách yêu cầu (VND). Quy đổi các từ viết tắt như '3t', '3tr', '3 triệu' thành số nguyên: 3000000."
+        default=None,
+        description=(
+            "Giá thuê tối đa khách yêu cầu (VND). Điền trường này khi khách dùng từ "
+            "chỉ CẬN TRÊN: 'dưới X', 'không quá X', 'tối đa X', 'kém hơn X', HOẶC khi "
+            "khách chỉ nêu một mức giá mà KHÔNG kèm từ định hướng nào (ngầm hiểu là "
+            "mức giá tối đa mong muốn). Quy đổi các từ viết tắt như '3t', '3tr', "
+            "'3 triệu' thành số nguyên: 3000000."
+        ),
     )
     so_nguoi: int | None = Field(default=None, description="Số lượng người ở tối đa hoặc số người muốn thuê.")
     dien_tich_min: float | None = Field(default=None, description="Diện tích tối thiểu (m2).")
@@ -48,9 +53,17 @@ class SearchIntent(BaseModel):
         description="True khi người dùng muốn tìm phòng/bài đăng ở ghép, ở chung, share phòng hoặc roommate.",
     )
     dia_chi: str | None = Field(default=None, description="Tên tòa nhà cụ thể, tên đường hoặc tên khu vực/quận huyện muốn thuê phòng.")
-    
-    tien_nghi_mod: Optional[ModifiedField] = Field(default=None, description="Hành động cập nhật danh sách tiện nghi")
-    dich_vu_mod: Optional[ModifiedField] = Field(default=None, description="Hành động cập nhật danh sách dịch vụ")
+
+    tien_nghi: List[str] = Field(default_factory=list, description="Danh sách tiện nghi khách yêu cầu trong tin nhắn này (VD: 'Điều hòa', 'Mạng'). Nếu không có, trả về mảng rỗng [].")
+    dich_vu: List[str] = Field(default_factory=list, description="Danh sách dịch vụ khách yêu cầu trong tin nhắn này. Nếu không có, trả về mảng rỗng [].")
+
+    @field_validator("tien_nghi", "dich_vu", mode="before")
+    @classmethod
+    def _null_to_empty_list(cls, value):
+        """LLM (nhất là openai/gpt-oss-20b) hay trả null thay vì [] cho hai
+        trường mảng này, khiến Pydantic từ chối cả câu trả lời và request hỏng
+        dù mọi trường khác đã đúng. Quy null về [] ngay ở bước validate."""
+        return [] if value is None else value
 
 class BotResponse(BaseModel):
     is_off_topic: bool = Field(description="True nếu tin nhắn KHÔNG liên quan đến phòng trọ, thuê nhà, nội quy.")
@@ -70,10 +83,23 @@ class RealEstateBot:
         # 2. Khởi tạo LLM
         self.llm = ChatGroq(
             api_key=os.getenv("GROQ_API_KEY"),
-            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
             temperature=0.1
         )
-        self.structured_llm = self.llm.with_structured_output(BotResponse)
+        # method="json_schema" thay vì mặc định "function_calling".
+        #
+        # openai/gpt-oss-20b KHÔNG dùng được function_calling ở đây: model trả
+        # markdown ```json thay vì gọi tool ("model did not call a tool"), đặt
+        # tên tool là "functions.BotResponse" khiến langchain không khớp được,
+        # và emit null cho các trường mảng -> Groq trả 400 tool_use_failed.
+        # Đo thực tế: function_calling 0/5 ca, json_schema 5/5.
+        #
+        # Nếu đổi sang model khác qua GROQ_MODEL mà model đó không hỗ trợ
+        # json_schema thì đổi lại thành "function_calling".
+        self.structured_llm = self.llm.with_structured_output(
+            BotResponse,
+            method=os.getenv("GROQ_STRUCTURED_OUTPUT_METHOD", "json_schema"),
+        )
         
         # 3. Khởi tạo Area Bot
         self.area_bot = area_bot or AreaRecommendationBot(engine=self.engine, schema=self.schema)
@@ -88,16 +114,24 @@ class RealEstateBot:
         Nhiệm vụ của bạn là đọc hiểu ngôn ngữ tự nhiên và chuyển đổi chính xác thành cấu trúc dữ liệu định dạng JSON.
 
         [QUY TẮC BẮT BUỘC TRÍCH XUẤT]:
-        1. Tuyệt đối KHÔNG bỏ sót thông tin về giá tiền. Quy đổi toàn bộ các từ viết tắt ('3t', '3tr', '8tr') sang số nguyên đầy đủ (Ví dụ: 3000000, 8000000) và điền vào trường 'gia_max'.
-        2. Trường 'dia_chi' chỉ lưu danh từ riêng đại diện cho địa điểm, khu vực hoặc tòa nhà (Ví dụ: "Hai Bà Trưng", "Thanh Xuân").
+        0. [QUAN TRỌNG NHẤT] Mỗi tin nhắn được xử lý HOÀN TOÀN ĐỘC LẬP — KHÔNG có bộ nhớ hội thoại,
+           KHÔNG cộng dồn tiêu chí với các lượt chat trước. CHỈ được trích xuất đúng những gì tin nhắn
+           HIỆN TẠI nêu ra; mọi trường không được nhắc tới trong tin nhắn hiện tại PHẢI để trống (null/[]),
+           TUYỆT ĐỐI không suy diễn từ ngữ cảnh trước đó.
+        1. Tuyệt đối KHÔNG bỏ sót thông tin về giá tiền trong tin nhắn hiện tại. Quy đổi toàn bộ các từ viết tắt ('3t', '3tr', '8tr') sang số nguyên đầy đủ (Ví dụ: 3000000, 8000000).
+           - PHẢI xác định đúng CHIỀU của mức giá dựa trên từ khóa đi kèm, TUYỆT ĐỐI không mặc định nhét mọi con số vào 'gia_max':
+             + Từ chỉ CẬN DƯỚI ("trên X", "hơn X", "từ X trở lên", "tối thiểu X", "ít nhất X") => điền vào 'gia_min'.
+             + Từ chỉ CẬN TRÊN ("dưới X", "không quá X", "tối đa X", "kém hơn X") hoặc khi khách CHỈ nêu một mức giá mà KHÔNG có từ định hướng nào => điền vào 'gia_max'.
+             + Khoảng giá ("từ X đến Y", "X - Y") => điền cả 'gia_min' = X và 'gia_max' = Y.
+        2. Trường 'dia_chi' chỉ lưu danh từ riêng đại diện cho địa điểm, khu vực hoặc tòa nhà (Ví dụ: "Hai Bà Trưng", "Thanh Xuân"). Giữ nguyên chính tả khách gõ, KHÔNG tự ý sửa/đoán thành tên gần giống.
         3. Phân loại chuẩn xác: Off-topic => is_off_topic = True; Hỏi nội quy => is_qa = True; Tìm kiếm phòng => is_search = True.
         4. Chào hỏi/xã giao (ví dụ: "hi", "hello", "xin chào") KHÔNG phải tìm kiếm: is_search = False.
-        5. Các câu như "có những phòng nào", "xem tất cả phòng", "tìm lại", "còn phòng nào khác"
-           là tìm kiếm mở rộng: is_search = True và search_intent.reset_filters = True.
-        6. Nếu chỉ hỏi danh sách phòng đang có mà không nêu tiêu chí, vẫn tạo search_intent và bật reset_filters.
-        7. "Ở ghép", "phòng ghép", "ở chung", "share phòng", "roommate" KHÔNG phải loại phòng vật lý.
+        5. Các câu như "có những phòng nào", "xem tất cả phòng", "tìm lại", "còn phòng nào khác" vẫn là
+           is_search = True nhưng KHÔNG nêu tiêu chí gì cả — cứ để mọi trường của search_intent trống,
+           hệ thống sẽ tự trả về toàn bộ phòng còn trống.
+        6. "Ở ghép", "phòng ghép", "ở chung", "share phòng", "roommate" KHÔNG phải loại phòng vật lý.
            Với các câu này phải đặt search_intent.is_shared = true và search_intent.loai_phong = null.
-        8. Chỉ điền loai_phong cho loại phòng vật lý như STUDIO, PHONG_TRO, 1K1N, 2K1N.
+        7. Chỉ điền loai_phong cho loại phòng vật lý như STUDIO, PHONG_TRO, 1K1N, 2K1N.
 
         [KNOWLEDGE BASE]
         {kb_context}
@@ -145,11 +179,14 @@ class RealEstateBot:
            - [SỐ LƯỢNG PHÒNG THỰC TẾ TÌM THẤY] là con số DUY NHẤT đáng tin cậy. Nếu con số này > 0, câu trả lời TUYỆT ĐỐI không được nói "không tìm thấy phòng nào". Nếu con số này = 0, câu trả lời TUYỆT ĐỐI không được liệt kê phòng nào cả.
         """
         
-        # 5. Bộ nhớ ngữ cảnh (State) của người dùng
-        self.state = {
+    @staticmethod
+    def _empty_filter_state() -> dict:
+        """Bộ lọc rỗng dùng cho MỖI tin nhắn — chatbot xử lý độc lập theo
+        từng câu hỏi (1-1), KHÔNG lưu/nhớ tiêu chí giữa các lượt chat."""
+        return {
             "gia_min": None, "gia_max": None, "so_nguoi": None,
             "dien_tich_min": None, "loai_phong": None, "is_shared": None, "dia_chi": None,
-            "tien_nghi": [], "dich_vu": [], "nearby_buildings": [],
+            "tien_nghi": [], "dich_vu": [], "nearby_buildings": [], "matched_buildings": [],
             "area_query": None,
         }
 
@@ -214,10 +251,19 @@ class RealEstateBot:
         return "Hiện chưa tìm thấy phòng nào phù hợp."
 
     def _load_kb(self):
+        # Đường dẫn TUYỆT ĐỐI theo vị trí file code. Trước đây dùng đường dẫn
+        # tương đối "knowledge_base.json" nên chỉ nạp được khi uvicorn được
+        # chạy đúng từ thư mục chatbot_api/; chạy từ chỗ khác là im lặng rơi
+        # về chuỗi fallback và nhánh is_qa mất toàn bộ kiến thức.
+        kb_path = BASE_DIR / "knowledge_base.json"
         try:
-            with open("knowledge_base.json", "r", encoding="utf-8") as f:
+            with open(kb_path, "r", encoding="utf-8") as f:
                 return json.dumps(json.load(f), ensure_ascii=False, indent=2)
         except FileNotFoundError:
+            print(f"[CẢNH BÁO] Không tìm thấy knowledge_base.json tại {kb_path}")
+            return "Nội quy: Giờ giấc tự do. Nuôi thú cưng nhỏ cho phép."
+        except json.JSONDecodeError as exc:
+            print(f"[CẢNH BÁO] knowledge_base.json không phải JSON hợp lệ: {exc}")
             return "Nội quy: Giờ giấc tự do. Nuôi thú cưng nhỏ cho phép."
 
     def _load_master_data(self):
@@ -285,12 +331,15 @@ class RealEstateBot:
             with urlopen(request, timeout=timeout_seconds) as response:
                 public_rooms = json.load(response)
         except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            # Endpoint này thuộc TroUyTin backend (TROUYTIN_API_BASE_URL, :8090),
+            # KHÔNG phải Prop-Tech (:5052). Ghi đúng tên service để khi đọc log
+            # không đi kiểm tra sai chỗ.
             raise RuntimeError(
-                "Không thể lấy public listing ID từ Prop-Tech."
+                f"Không thể lấy public listing ID từ TroUyTin ({base_url})."
             ) from exc
 
         if not isinstance(public_rooms, list):
-            raise RuntimeError("Prop-Tech trả về danh sách phòng public không hợp lệ.")
+            raise RuntimeError("TroUyTin trả về danh sách phòng public không hợp lệ.")
 
         return [item for item in public_rooms if isinstance(item, dict)]
 
@@ -471,38 +520,79 @@ class RealEstateBot:
             "dia_chi": str(row.get("DIA_CHI") or ""),
         }
 
-    def _build_deterministic_search_message(self, opening_line: str, rooms: list[dict]) -> str:
+    def _build_deterministic_search_message(
+        self,
+        opening_line: str,
+        rooms: list[dict],
+        matched_buildings: list[str] | None = None,
+    ) -> str:
         """Sinh message bằng code để LLM không thể đổi sai giá."""
         if not rooms:
             return opening_line
+
+        matched_buildings = matched_buildings or []
 
         lines = [opening_line]
         for room in rooms:
             name = room.get("roomName") or room.get("ma_phong") or "Phòng"
             price = self._format_vnd(int(room.get("gia_thue") or room.get("price") or 0))
             address = room.get("address") or room.get("dia_chi") or ""
+            building = room.get("buildingName") or room.get("toa_nha") or ""
+            # Luôn nêu rõ phòng thuộc tòa nào, và đánh dấu "lân cận" khi đây
+            # không phải tòa khách hỏi trực tiếp -> khách không hiểu nhầm giá
+            # của tòa lân cận là giá của tòa họ hỏi.
+            building_note = ""
+            if building:
+                if matched_buildings and building not in matched_buildings:
+                    building_note = f" (tòa {building}, lân cận)"
+                else:
+                    building_note = f" (tòa {building})"
             if room.get("isShared"):
                 lines.append(
-                    f"- {name}: {room.get('currentOccupants', 0)}/"
+                    f"- {name}{building_note}: {room.get('currentOccupants', 0)}/"
                     f"{room.get('maxOccupants', 0)} người, còn "
                     f"{room.get('availableSlots', 0)} chỗ, giá {price}"
                     + (f", địa chỉ {address}." if address else ".")
                 )
             else:
                 lines.append(
-                    f"- {name}, giá {price}"
+                    f"- {name}{building_note}, giá {price}"
                     + (f", địa chỉ {address}." if address else ".")
                 )
         return "\n".join(lines)
 
     # --- HÀM TÌM KIẾM SQL (ĐÃ LOẠI BỎ ĐIỂM VỊ TRÍ TRÙNG LẶP) ---
     def _unified_search(self, intent_data: dict):
-        sql = """
+        params = {
+            "gia_min": intent_data.get("gia_min"),
+            "gia_max": intent_data.get("gia_max"),
+            "so_nguoi": intent_data.get("so_nguoi"),
+            "dien_tich_min": intent_data.get("dien_tich_min"),
+            "loai_phong": intent_data.get("loai_phong"),
+        }
+
+        # Tòa nhà khách hỏi TRỰC TIẾP (không phải chỉ "lân cận") phải luôn
+        # được ưu tiên xếp lên trước, nếu không các tòa lân cận có giá rẻ
+        # hơn sẽ chiếm hết chỗ trong LIMIT và khách sẽ không thấy phòng của
+        # đúng tòa họ hỏi -> hiểu nhầm là "chatbot trả sai giá của tòa này".
+        matched_buildings = intent_data.get("matched_buildings", [])
+        building_priority_expr = "0"
+        if matched_buildings:
+            mb_placeholders = [f":mb{i}" for i in range(len(matched_buildings))]
+            building_priority_expr = (
+                f'CASE WHEN tn."TEN_TOA_NHA" IN ({", ".join(mb_placeholders)}) '
+                "THEN 1 ELSE 0 END"
+            )
+            for i, building_name in enumerate(matched_buildings):
+                params[f"mb{i}"] = building_name
+
+        sql = f"""
         WITH ranked_rooms AS (
             SELECT
                 p.*,
                 tn."TEN_TOA_NHA",
                 tn."DIA_CHI",
+                ({building_priority_expr}) AS "BUILDING_PRIORITY",
                 (
                     CASE
                         WHEN CAST(:gia_min AS NUMERIC) IS NULL
@@ -538,14 +628,6 @@ class RealEstateBot:
               AND COALESCE(t."IS_DELETED", FALSE) = FALSE
               AND COALESCE(tn."IS_DELETED", FALSE) = FALSE
         """
-
-        params = {
-            "gia_min": intent_data.get("gia_min"),
-            "gia_max": intent_data.get("gia_max"),
-            "so_nguoi": intent_data.get("so_nguoi"),
-            "dien_tich_min": intent_data.get("dien_tich_min"),
-            "loai_phong": intent_data.get("loai_phong"),
-        }
 
         nearby_buildings = intent_data.get("nearby_buildings", [])
         area_query = intent_data.get("area_query")
@@ -590,8 +672,8 @@ class RealEstateBot:
         SELECT *
         FROM ranked_rooms
         WHERE "MATCH_SCORE" >= 50
-        ORDER BY "MATCH_SCORE" DESC, "DON_GIA_THUE_MAC_DINH" ASC
-        LIMIT 5
+        ORDER BY "BUILDING_PRIORITY" DESC, "MATCH_SCORE" DESC, "DON_GIA_THUE_MAC_DINH" ASC
+        LIMIT 20
         """
 
         print("\n=== [DEBUG] PostgreSQL QUERY ===")
@@ -608,8 +690,12 @@ class RealEstateBot:
         print(f"\n==================== [DEBUG CONSOLE START] ====================")
         print(f"📥 Tin nhắn thô nhập vào: '{user_input}'")
 
+        # Mỗi tin nhắn được xử lý ĐỘC LẬP (1-1): không còn bộ nhớ hội thoại/
+        # cộng dồn tiêu chí giữa các lượt chat — state chỉ tồn tại trong
+        # phạm vi xử lý của riêng tin nhắn này.
+        state = self._empty_filter_state()
+
         if user_input.lower() == "clear":
-            self.state = {k: None if k not in ["tien_nghi", "dich_vu", "nearby_buildings"] else [] for k in self.state}
             return {"type": "system", "message": "Đã dọn dẹp bộ nhớ ngữ cảnh hội thoại thành công!"}
 
         normalized_message = user_input.strip().casefold().strip(" .,!?")
@@ -618,14 +704,14 @@ class RealEstateBot:
                 "type": "result",
                 "message": "Xin chào! Mình có thể giúp bạn tìm phòng theo khu vực, giá, số người, diện tích hoặc tiện nghi. Bạn đang cần phòng như thế nào?",
                 "data": [],
-                "current_filters": self.state,
+                "current_filters": state,
             }
 
         # ---------------------------------------------------------
         # BƯỚC 1: PROMPT 1 (INTENT EXTRACTION) -> STRUCTURED OUTPUT
         # ---------------------------------------------------------
         prompt_1 = self.PROMPT_1_EXTRACTION.format(kb_context=self.kb_content)
-        
+
         try:
             raw_response = self.structured_llm.invoke(prompt_1 + f"\n\nNgười dùng hiện tại nói: {user_input}")
             print("\n=== [DEBUG] BƯỚC 1: KẾT QUẢ TRÍCH XUẤT TỪ PROMPT 1 ===")
@@ -640,32 +726,15 @@ class RealEstateBot:
         formatted_rooms = []
 
         # ---------------------------------------------------------
-        # BƯỚC 2: UPDATE STATE & AREA BOT (BỘ LỌC PHẠM VI)
+        # BƯỚC 2: XÂY DỰNG BỘ LỌC & AREA BOT (BỘ LỌC PHẠM VI) CHO TIN NHẮN NÀY
         # ---------------------------------------------------------
         if raw_response.is_search and raw_response.search_intent:
             ext = raw_response.search_intent
 
-            if ext.reset_filters:
-                self.state = {
-                    "gia_min": None,
-                    "gia_max": None,
-                    "so_nguoi": None,
-                    "dien_tich_min": None,
-                    "loai_phong": None,
-                    "is_shared": None,
-                    "dia_chi": None,
-                    "tien_nghi": [],
-                    "dich_vu": [],
-                    "nearby_buildings": [],
-                    "area_query": None,
-                }
-                print("\n=== [DEBUG] RESET FILTERS: tìm kiếm mở rộng/tất cả phòng ===")
-
-            if ext.dia_chi and ext.dia_chi != self.state.get("dia_chi"):
+            if ext.dia_chi:
                 print(f"\n=== [DEBUG] BƯỚC 2.1: TRIGGER AREA BOT (CHỈ LỌC CANDIDATE BUILDINGS) ===")
-                self.state["dia_chi"] = ext.dia_chi
-                self.state["tien_nghi"] = [] 
-                
+                state["dia_chi"] = ext.dia_chi
+
                 matched_places = self.area_bot.find_places(ext.dia_chi)
 
                 if not matched_places:
@@ -683,14 +752,12 @@ class RealEstateBot:
                     # khiến hệ thống báo "không tìm thấy" dù DB thực sự có dữ
                     # liệu phù hợp. Thay vào đó chuyển sang lọc gần đúng
                     # (ILIKE) trong _unified_search thông qua "area_query".
-                    self.state["nearby_buildings"] = []
-                    self.state["area_query"] = ext.dia_chi
+                    state["area_query"] = ext.dia_chi
                     print(
                         " -> AreaBot chưa match được tòa gốc; "
                         "chuyển sang lọc gần đúng (ILIKE) theo địa chỉ/tên tòa."
                     )
                 else:
-                    self.state["area_query"] = None
                     print(
                         " -> AreaBot matched origin: "
                         f"{origin['name']} | {origin['address']}"
@@ -701,69 +768,61 @@ class RealEstateBot:
                         radius_meters=5000,
                     )
 
+                    # matched_buildings: các tòa THỰC SỰ khớp tên/địa chỉ khách
+                    # gõ -> dùng để ưu tiên hiển thị trước trong kết quả, tránh
+                    # bị các tòa lân cận (chỉ để gợi ý thêm) có giá rẻ hơn
+                    # chiếm hết chỗ trong LIMIT.
+                    matched_names = [place["name"] for place in matched_places]
+                    state["matched_buildings"] = list(dict.fromkeys(matched_names))
+
                     building_names = [
-                        *[place["name"] for place in matched_places],
+                        *matched_names,
                         *[place["place"] for place in nearby_data],
                     ]
 
-                    self.state["nearby_buildings"] = list(
-                        dict.fromkeys(building_names)
-                    )
+                    state["nearby_buildings"] = list(dict.fromkeys(building_names))
 
                     print(
+                        " -> Matched buildings (ưu tiên): "
+                        + json.dumps(state["matched_buildings"], ensure_ascii=False)
+                    )
+                    print(
                         " -> Candidate buildings: "
-                        + json.dumps(self.state["nearby_buildings"], ensure_ascii=False)
+                        + json.dumps(state["nearby_buildings"], ensure_ascii=False)
                     )
                     print(
                         " -> AreaBot recommendation: tìm kiếm trong "
-                        f"{len(self.state['nearby_buildings'])} tòa nhà "
+                        f"{len(state['nearby_buildings'])} tòa nhà "
                         "(các tòa khớp địa chỉ và các tòa lân cận)."
                     )
 
-            # Đồng bộ bộ lọc vào Session State
             for field in ["gia_min", "gia_max", "so_nguoi", "dien_tich_min", "loai_phong", "is_shared"]:
                 val = getattr(ext, field)
                 if val is not None:
-                    self.state[field] = val
+                    state[field] = val
 
             if ext.is_shared is True:
-                self.state["is_shared"] = True
-                self.state["loai_phong"] = None
-            elif ext.loai_phong is not None:
-                self.state["is_shared"] = None
-                
-            if ext.tien_nghi_mod:
-                mod = ext.tien_nghi_mod
-                curr_tn = self.state["tien_nghi"]
-                if mod.action == ModifierAction.ADD: self.state["tien_nghi"] = list(set(curr_tn + mod.values))
-                elif mod.action == ModifierAction.REMOVE: self.state["tien_nghi"] = [x for x in curr_tn if x not in mod.values]
-                elif mod.action == ModifierAction.CLEAR: self.state["tien_nghi"] = []
+                state["loai_phong"] = None
 
-            if ext.dich_vu_mod:
-                mod = ext.dich_vu_mod
-                curr_dv = self.state["dich_vu"]
-                if mod.action == ModifierAction.ADD: self.state["dich_vu"] = list(set(curr_dv + mod.values))
-                elif mod.action == ModifierAction.REMOVE: self.state["dich_vu"] = [x for x in curr_dv if x not in mod.values]
-                elif mod.action == ModifierAction.CLEAR: self.state["dich_vu"] = []
-
-            for field in ["tien_nghi", "dich_vu"]:
+            for field, values in (("tien_nghi", ext.tien_nghi), ("dich_vu", ext.dich_vu)):
                 normalized_list = []
-                for item in self.state.get(field, []):
-                    master_key = "services" if field == "dich_vu" else "amenities"
+                master_key = "services" if field == "dich_vu" else "amenities"
+                for item in values:
                     match = self._best_match(self._normalize_term(item), self.MASTER[master_key])
-                    if match: normalized_list.append(match)
-                self.state[field] = list(set(normalized_list))
+                    if match:
+                        normalized_list.append(match)
+                state[field] = list(set(normalized_list))
 
-            print("\n=== [DEBUG] BƯỚC 2.2: TRẠNG THÁI FILTER STATE HIỆN TẠI (Trước khi Query) ===")
-            print(json.dumps(self.state, ensure_ascii=False, indent=2))
+            print("\n=== [DEBUG] BƯỚC 2.2: BỘ LỌC CỦA TIN NHẮN NÀY (Trước khi Query) ===")
+            print(json.dumps(state, ensure_ascii=False, indent=2))
 
             # ---------------------------------------------------------
             # BƯỚC 3: SQL RANKING & SORTING (QUYỀN QUYẾT ĐỊNH THUỘC VỀ ĐÂY)
             # ---------------------------------------------------------
-            if self.state.get("is_shared") is True:
-                rooms = self._shared_search(self.state)
+            if state.get("is_shared") is True:
+                rooms = self._shared_search(state)
             else:
-                rooms = self._unified_search(self.state)
+                rooms = self._unified_search(state)
 
             print(f"\n=== [DEBUG] BƯỚC 3.2: KẾT QUẢ ĐẦU RA TỪ DATABASE (Số lượng phòng tìm thấy: {len(rooms)}) ===")
 
@@ -785,14 +844,14 @@ class RealEstateBot:
                         "điều hướng. Bạn vui lòng thử lại sau."
                     ),
                     "data": [],
-                    "current_filters": self.state,
+                    "current_filters": state,
                 }
 
             for room in rooms:
                 room_id_raw = room.get("PHONG_ID")
                 room_id = int(room_id_raw) if room_id_raw is not None else None
 
-                if self.state.get("is_shared") is True:
+                if state.get("is_shared") is True:
                     # Bắt buộc resolve theo BAI_DANG_ID trước. Một PHONG_ID có thể
                     # có nhiều bài đăng với các mức giá khác nhau, nên ghép theo
                     # roomId có thể lấy nhầm giá của bài đăng khác.
@@ -837,7 +896,7 @@ class RealEstateBot:
                     )
                     continue
 
-                if self.state.get("is_shared") is True:
+                if state.get("is_shared") is True:
                     formatted_room = self._format_shared_room(room, public_room)
                     print(
                         " 👉 Shared match: "
@@ -855,6 +914,7 @@ class RealEstateBot:
                 formatted_room.update({
                     "ma_phong": room['MA_PHONG'],
                     "diem_phu_hop": int(room['MATCH_SCORE']),
+                    "building_priority": int(room.get('BUILDING_PRIORITY') or 0),
                     "loai_phong": room['LOAI_PHONG'],
                     # Đồng bộ với giá public listing đang hiển thị trên frontend.
                     "gia_thue": int(formatted_room["price"]),
@@ -864,6 +924,35 @@ class RealEstateBot:
                 print(f" 👉 Match: {formatted_room['ma_phong']} | Tòa: {formatted_room['toa_nha']} | Giá: {formatted_room['gia_thue']} VND | MATCH_SCORE: {formatted_room['diem_phu_hop']}")
                 formatted_rooms.append(formatted_room)
 
+            if state.get("is_shared") is not True and formatted_rooms:
+                # SQL đã lọc/xếp hạng theo PHONG.DON_GIA_THUE_MAC_DINH, nhưng
+                # giá THỰC SỰ hiển thị cho khách (gia_thue) lấy từ bài đăng
+                # public, có thể khác. Nếu không lọc/sắp xếp lại theo đúng
+                # giá hiển thị này, khách có thể thấy phòng "lệch" khỏi tiêu
+                # chí giá họ yêu cầu -> hiểu nhầm là chatbot báo sai giá.
+                gia_min = state.get("gia_min")
+                gia_max = state.get("gia_max")
+
+                def _in_price_range(r):
+                    price = r.get("gia_thue", 0)
+                    if gia_min is not None and price < gia_min:
+                        return False
+                    if gia_max is not None and price > gia_max:
+                        return False
+                    return True
+
+                if gia_min is not None or gia_max is not None:
+                    formatted_rooms = [r for r in formatted_rooms if _in_price_range(r)]
+
+                formatted_rooms.sort(
+                    key=lambda r: (
+                        -int(r.get("building_priority", 0)),
+                        -int(r.get("diem_phu_hop", 0)),
+                        int(r.get("gia_thue", 0)),
+                    )
+                )
+                formatted_rooms = formatted_rooms[:5]
+
         # ---------------------------------------------------------
         # BƯỚC 4: PROMPT 2 (LLM DIỄN GIẢI KẾT QUẢ THÀNH CÂU TRẢ LỜI TỰ NHIÊN)
         # ---------------------------------------------------------
@@ -872,11 +961,11 @@ class RealEstateBot:
             opening_line = ""
         elif formatted_rooms:
             sql_context_str = json.dumps(formatted_rooms, ensure_ascii=False, indent=2)
-            filter_summary = self._build_filter_summary(self.state)
+            filter_summary = self._build_filter_summary(state)
             opening_line = self._build_opening_line(filter_summary, len(formatted_rooms))
         else:
             sql_context_str = "Hệ thống không tìm thấy phòng nào phù hợp."
-            filter_summary = self._build_filter_summary(self.state)
+            filter_summary = self._build_filter_summary(state)
             opening_line = self._build_opening_line(filter_summary, 0)
 
         prompt_2 = self.PROMPT_2_CS.format(
@@ -890,11 +979,12 @@ class RealEstateBot:
             sql_results=sql_context_str,
             kb_context=self.kb_content
         )
-        
+
         if raw_response.is_search:
             final_message = self._build_deterministic_search_message(
                 opening_line,
                 formatted_rooms,
+                matched_buildings=state.get("matched_buildings"),
             )
         else:
             final_message = self.llm.invoke(prompt_2).content
@@ -906,8 +996,8 @@ class RealEstateBot:
         return {
             "type": "result",
             "message": final_message,
-            "data": formatted_rooms, 
-            "current_filters": self.state
+            "data": formatted_rooms,
+            "current_filters": state
         }
         
 if __name__ == "__main__":

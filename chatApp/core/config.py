@@ -38,7 +38,7 @@ CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "chatbot_documents"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 # --- LLM (Groq) ---
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # --- Chunking khi ingest ---
@@ -56,6 +56,15 @@ POSTGRES_DSN = (
 )
 POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", os.getenv("Database__Schema", "proptech"))
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", os.getenv("InternalApiKey"))
+
+# Cho phép caller NỘI BỘ (đã có INTERNAL_API_KEY hợp lệ) gọi /api/v1/chat mà
+# không mang danh tính người dùng — đây là hình dạng request của ChatService.cs
+# bên Prop-Tech: trả LegacyChatResponse và không lưu hội thoại.
+#
+# LƯU Ý: cờ này KHÔNG còn nghĩa "cho gọi mà không cần xác thực". Internal API
+# key giờ LUÔN bắt buộc, xem api/dependencies.py::get_optional_current_user.
+# Đặt false khi mọi caller đều đã tiêm đủ X-User-Id / X-User-Role /
+# X-Building-Code.
 ALLOW_LEGACY_UNAUTHENTICATED_CHAT = (
     os.getenv("ALLOW_LEGACY_UNAUTHENTICATED_CHAT", "true").lower() == "true"
 )

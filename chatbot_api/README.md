@@ -24,10 +24,16 @@ chatbot_api/
 
 ```bash
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8001
 ```
 
-Swagger: `http://localhost:8000/docs`
+Swagger: `http://localhost:8001/docs`
+
+> **Port 8001, không phải 8000.** `chatApp/` (chatbot RAG hỗ trợ cư dân của
+> Prop-Tech) chạy ở 8000; trước đây cả hai service dùng chung 8000 nên không
+> thể bật đồng thời trên cùng một máy. Nếu đổi port ở đây thì phải cập nhật
+> kèm `CHATBOT_API_BASE_URL` của TroUyTin backend và
+> `NEXT_PUBLIC_CHATBOT_API_BASE_URL` của frontend.
 
 ## API
 

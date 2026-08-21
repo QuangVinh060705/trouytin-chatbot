@@ -1,0 +1,79 @@
+server:
+  # Render/cloud tu cap bien PORT -> uu tien PORT, roi SERVER_PORT, cuoi cung 8090 (local).
+  port: ${PORT:${SERVER_PORT:8090}}
+
+spring:
+  application:
+    name: trouytin-api
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/postgres}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    hikari:
+      # Supabase free gioi han 15 ket noi. Gioi han pool nho de nhieu service cung dung
+      # (TroUyTin BE + Prop-Tech BE + local) khong vuot 15.
+      maximum-pool-size: ${DB_POOL_MAX:3}
+      minimum-idle: 1
+      connection-timeout: 30000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+  mail:
+    # Mac dinh dung cong 465 (SSL truc tiep). Neu nen chan 465, doi MAIL_PORT=587 tren env
+    # (587 dung STARTTLS). Ca 2 property duoi deu khai bao san, JavaMail tu chon theo cong.
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          # SSL cho cong 465
+          ssl:
+            enable: ${MAIL_SSL_ENABLE:true}
+          # STARTTLS cho cong 587 (khi doi MAIL_PORT=587 thi set MAIL_SSL_ENABLE=false, MAIL_STARTTLS=true)
+          starttls:
+            enable: ${MAIL_STARTTLS:false}
+          # Timeout de khong treo vo han khi SMTP khong phan hoi (vd nen chan cong).
+          # Request se fail nhanh + bao loi thay vi "load mai".
+          connectiontimeout: 10000
+          timeout: 10000
+          writetimeout: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+trouytin:
+  auth:
+    jwt-secret: ${TROUYTIN_JWT_SECRET:dev-change-this-secret}
+    expiration-seconds: ${TROUYTIN_JWT_EXPIRATION_SECONDS:43200}
+  integration:
+    internal-api-key: ${TROUYTIN_INTERNAL_API_KEY:dev-internal-key}
+  proptech:
+    base-url: ${PROPTECH_API_BASE_URL:http://localhost:5052}
+  chatbot:
+    # Port 8001: chatApp (chatbot RAG của Prop-Tech) chiếm 8000, hai service
+    # không thể chạy đồng thời nếu dùng chung port.
+    base-url: ${CHATBOT_API_BASE_URL:http://localhost:8001}
+  location:
+    base-url: ${LOCATION_API_BASE_URL:https://provinces.open-api.vn}
+    api-version: ${LOCATION_API_VERSION:v1}
+  otp:
+    length: ${OTP_LENGTH:6}
+    ttl-seconds: ${OTP_TTL:300}
+    max-attempts: ${OTP_MAX_ATTEMPTS:5}
+    resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:60}
+  mail:
+    from-address: ${MAIL_FROM_ADDRESS:${MAIL_USERNAME:no-reply@trouytin.local}}
+    from-name: ${MAIL_FROM_NAME:TroUyTin}
+  google:
+    client-id: ${GOOGLE_CLIENT_ID:}

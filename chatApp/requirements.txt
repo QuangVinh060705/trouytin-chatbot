@@ -1,0 +1,16 @@
+langchain-chroma
+langchain-huggingface
+sentence-transformers
+langchain-community
+langchain-groq
+langchain-text-splitters
+langchain-core
+python-dotenv
+pypdf
+docx2txt
+fastapi
+uvicorn[standard]
+python-multipart
+rank_bm25
+psycopg[binary]
+boto3
