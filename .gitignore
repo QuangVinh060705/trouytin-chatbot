@@ -5,6 +5,14 @@
 !.env.example
 chatbot_api/.env
 
+# AppS/ chua HAI REPO GIT RIENG, khong thuoc repo nay:
+#   AppS/Prop-Tech -> github.com/vuongquangthang/Prop-Tech
+#   AppS/TroUyTin  -> github.com/VietDuc005/TroUyTin
+# Sua code cua hai project do thi commit trong repo cua chung, khong commit o
+# day. Ignore ca thu muc de "git add -A" khong keo theo node_modules/, target/,
+# obj/, bin/, .next/, build/ va cac file da co repo rieng quan ly.
+AppS/
+
 # Python
 venv/
 .venv/
