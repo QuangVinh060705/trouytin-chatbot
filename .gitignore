@@ -13,6 +13,17 @@ chatbot_api/.env
 # obj/, bin/, .next/, build/ va cac file da co repo rieng quan ly.
 AppS/
 
+# Code cu o thu muc goc, da duoc thay the boi chatbot_api/ va chatApp/.
+# BAT BUOC co dau "/" o dau de NEO vao thu muc goc: viet "controllers/" tran
+# se khop MOI thu muc ten controllers o moi cap sau nay, ke ca
+# chatbot_api/controllers/ va chatApp/... - lam file moi trong do bi ignore.
+/chatbotWeb/
+/controllers/
+/services/
+
+# Du lieu vector sinh ra tu ingest, khong phai source code.
+/chroma_db/
+
 # Python
 venv/
 .venv/
