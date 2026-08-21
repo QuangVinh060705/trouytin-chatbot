@@ -10,7 +10,9 @@ class ChatRequest(BaseModel):
 
 class ChatRoom(BaseModel):
     id: str
-    roomId: int
+    # _shared_search() LEFT JOIN sang "PHONG" nên PHONG_ID có thể NULL với bài
+    # đăng ở ghép -> để int cứng sẽ làm response_model ném lỗi 500.
+    roomId: int | None = None
     roomCode: str
     roomName: str
     buildingName: str
@@ -21,6 +23,17 @@ class ChatRoom(BaseModel):
     roomType: str
     status: str
     address: str
+
+    # --- Các trường riêng của bài đăng Ở GHÉP ---
+    # Bắt buộc phải khai báo ở đây: FastAPI serialize theo response_model nên
+    # mọi field không có trong schema đều BỊ LOẠI BỎ. Thiếu chúng thì
+    # _format_shared_room() tính đúng số chỗ trống nhưng frontend không bao
+    # giờ nhận được, và card phòng ở ghép không hiện được "còn N chỗ".
+    isShared: bool = False
+    postId: int | None = None
+    currentOccupants: int | None = None
+    maxOccupants: int | None = None
+    availableSlots: int | None = None
 
 
 class ChatResponse(BaseModel):

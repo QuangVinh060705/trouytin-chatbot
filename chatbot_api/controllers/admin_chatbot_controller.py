@@ -1,4 +1,5 @@
 import os
+from hmac import compare_digest
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
@@ -13,8 +14,18 @@ from services.chat_history_repository import ChatHistoryRepository
 
 
 def verify_internal_api_key(x_internal_api_key: str = Header(default="")):
-    expected = os.getenv("Chatbot__InternalApiKey", "dev-internal-key")
-    if not x_internal_api_key or x_internal_api_key != expected:
+    """Router này cho phép ĐỌC và XÓA toàn bộ lịch sử hội thoại, nên không được
+    có khóa mặc định: thiếu cấu hình thì chặn hẳn (503) thay vì âm thầm chấp
+    nhận "dev-internal-key" trên môi trường thật.
+    """
+    expected = os.getenv("Chatbot__InternalApiKey")
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Chatbot__InternalApiKey chưa được cấu hình.",
+        )
+    # compare_digest: so sánh thời gian hằng định, chống timing attack.
+    if not x_internal_api_key or not compare_digest(x_internal_api_key, expected):
         raise HTTPException(status_code=403, detail="Invalid internal API key")
 
 

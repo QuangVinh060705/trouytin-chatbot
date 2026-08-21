@@ -1,12 +1,13 @@
 import os
 import json
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from typing import List, Optional
 
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from langchain_groq import ChatGroq
 
@@ -15,6 +16,10 @@ from .area_bot import AreaRecommendationBot
 from .database import create_database_engine, get_database_schema
 
 load_dotenv()
+
+# Thư mục gốc của project (chatbot_api/), dùng để mở file dữ liệu kèm theo code
+# bằng đường dẫn TUYỆT ĐỐI thay vì phụ thuộc thư mục làm việc hiện tại.
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # --- CÁC PYDANTIC MODELS ---
 # LƯU Ý: Bot xử lý MỖI tin nhắn ĐỘC LẬP (1-1), không cộng dồn tiêu chí giữa
@@ -49,8 +54,16 @@ class SearchIntent(BaseModel):
     )
     dia_chi: str | None = Field(default=None, description="Tên tòa nhà cụ thể, tên đường hoặc tên khu vực/quận huyện muốn thuê phòng.")
 
-    tien_nghi: List[str] = Field(default_factory=list, description="Danh sách tiện nghi khách yêu cầu trong tin nhắn này (VD: 'Điều hòa', 'Mạng').")
-    dich_vu: List[str] = Field(default_factory=list, description="Danh sách dịch vụ khách yêu cầu trong tin nhắn này.")
+    tien_nghi: List[str] = Field(default_factory=list, description="Danh sách tiện nghi khách yêu cầu trong tin nhắn này (VD: 'Điều hòa', 'Mạng'). Nếu không có, trả về mảng rỗng [].")
+    dich_vu: List[str] = Field(default_factory=list, description="Danh sách dịch vụ khách yêu cầu trong tin nhắn này. Nếu không có, trả về mảng rỗng [].")
+
+    @field_validator("tien_nghi", "dich_vu", mode="before")
+    @classmethod
+    def _null_to_empty_list(cls, value):
+        """LLM (nhất là openai/gpt-oss-20b) hay trả null thay vì [] cho hai
+        trường mảng này, khiến Pydantic từ chối cả câu trả lời và request hỏng
+        dù mọi trường khác đã đúng. Quy null về [] ngay ở bước validate."""
+        return [] if value is None else value
 
 class BotResponse(BaseModel):
     is_off_topic: bool = Field(description="True nếu tin nhắn KHÔNG liên quan đến phòng trọ, thuê nhà, nội quy.")
@@ -70,10 +83,23 @@ class RealEstateBot:
         # 2. Khởi tạo LLM
         self.llm = ChatGroq(
             api_key=os.getenv("GROQ_API_KEY"),
-            model="llama-3.3-70b-versatile",
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
             temperature=0.1
         )
-        self.structured_llm = self.llm.with_structured_output(BotResponse)
+        # method="json_schema" thay vì mặc định "function_calling".
+        #
+        # openai/gpt-oss-20b KHÔNG dùng được function_calling ở đây: model trả
+        # markdown ```json thay vì gọi tool ("model did not call a tool"), đặt
+        # tên tool là "functions.BotResponse" khiến langchain không khớp được,
+        # và emit null cho các trường mảng -> Groq trả 400 tool_use_failed.
+        # Đo thực tế: function_calling 0/5 ca, json_schema 5/5.
+        #
+        # Nếu đổi sang model khác qua GROQ_MODEL mà model đó không hỗ trợ
+        # json_schema thì đổi lại thành "function_calling".
+        self.structured_llm = self.llm.with_structured_output(
+            BotResponse,
+            method=os.getenv("GROQ_STRUCTURED_OUTPUT_METHOD", "json_schema"),
+        )
         
         # 3. Khởi tạo Area Bot
         self.area_bot = area_bot or AreaRecommendationBot(engine=self.engine, schema=self.schema)
@@ -225,10 +251,19 @@ class RealEstateBot:
         return "Hiện chưa tìm thấy phòng nào phù hợp."
 
     def _load_kb(self):
+        # Đường dẫn TUYỆT ĐỐI theo vị trí file code. Trước đây dùng đường dẫn
+        # tương đối "knowledge_base.json" nên chỉ nạp được khi uvicorn được
+        # chạy đúng từ thư mục chatbot_api/; chạy từ chỗ khác là im lặng rơi
+        # về chuỗi fallback và nhánh is_qa mất toàn bộ kiến thức.
+        kb_path = BASE_DIR / "knowledge_base.json"
         try:
-            with open("knowledge_base.json", "r", encoding="utf-8") as f:
+            with open(kb_path, "r", encoding="utf-8") as f:
                 return json.dumps(json.load(f), ensure_ascii=False, indent=2)
         except FileNotFoundError:
+            print(f"[CẢNH BÁO] Không tìm thấy knowledge_base.json tại {kb_path}")
+            return "Nội quy: Giờ giấc tự do. Nuôi thú cưng nhỏ cho phép."
+        except json.JSONDecodeError as exc:
+            print(f"[CẢNH BÁO] knowledge_base.json không phải JSON hợp lệ: {exc}")
             return "Nội quy: Giờ giấc tự do. Nuôi thú cưng nhỏ cho phép."
 
     def _load_master_data(self):
@@ -296,12 +331,15 @@ class RealEstateBot:
             with urlopen(request, timeout=timeout_seconds) as response:
                 public_rooms = json.load(response)
         except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            # Endpoint này thuộc TroUyTin backend (TROUYTIN_API_BASE_URL, :8090),
+            # KHÔNG phải Prop-Tech (:5052). Ghi đúng tên service để khi đọc log
+            # không đi kiểm tra sai chỗ.
             raise RuntimeError(
-                "Không thể lấy public listing ID từ Prop-Tech."
+                f"Không thể lấy public listing ID từ TroUyTin ({base_url})."
             ) from exc
 
         if not isinstance(public_rooms, list):
-            raise RuntimeError("Prop-Tech trả về danh sách phòng public không hợp lệ.")
+            raise RuntimeError("TroUyTin trả về danh sách phòng public không hợp lệ.")
 
         return [item for item in public_rooms if isinstance(item, dict)]
 
