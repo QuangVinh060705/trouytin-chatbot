@@ -1,4 +1,4 @@
-# Environment variables
+# Environment variables - Bi mat, KHONG commit
 .env
 *.env
 .env.*
@@ -6,9 +6,15 @@
 chatbot_api/.env
 
 # Python
+venv/
+.venv/
+env/
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+
+# ChromaDB co the sinh lai tu ingest; giu neu muon deploy kem, bo comment neu khong
+# chroma_db/
 
 # chatApp local document storage (dev fallback when S3/R2 isn't configured)
 chatApp/data/storage/
