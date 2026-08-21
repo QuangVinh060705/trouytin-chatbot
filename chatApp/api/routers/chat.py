@@ -5,6 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from api.dependencies import (
     CurrentUser, assert_building_access, get_optional_current_user,
+    verify_internal_api_key,
 )
 from api.schemas import (
     ChatMessageResponse, ChatRequest, LegacyChatResponse,
@@ -27,7 +28,13 @@ def _legacy_mobile_answer(building_code: str, question: str) -> str:
 
 
 @router.post("", response_model=LegacyChatResponse)
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest,
+    _: None = Depends(verify_internal_api_key),
+):
+    """Endpoint legacy. Trước đây KHÔNG có dependency nào, nên bất kỳ ai tiếp
+    cận được port này đều đọc được kho tri thức của MỌI tenant chỉ bằng cách
+    tự điền building_code. Giờ bắt buộc có internal API key."""
     from core.chatbot import generate_response
     from core.retriever_cache import get_retriever
     building_code = request.building_code.strip().upper()

@@ -45,10 +45,22 @@ def get_optional_current_user(
     x_building_code: str | None = Header(default=None),
     x_internal_api_key: str | None = Header(default=None),
 ) -> CurrentUser | None:
-    supplied = any((x_user_id, x_user_role, x_building_code, x_internal_api_key))
-    if not supplied and config.ALLOW_LEGACY_UNAUTHENTICATED_CHAT:
-        return None
+    # LUÔN kiểm tra internal API key, kể cả ở nhánh legacy.
+    #
+    # Trước đây nếu request không mang header nào thì hàm trả về None ngay và
+    # mobile_chat() bỏ qua assert_building_access, lấy building_code trực tiếp
+    # từ body -> bất kỳ ai tiếp cận được port 8000 đều đọc được kho tri thức
+    # của MỌI tenant mà không cần key lẫn JWT.
+    #
+    # Nhánh legacy giờ chỉ còn nghĩa "caller nội bộ đã có key nhưng không mang
+    # danh tính người dùng" (ChatService của Prop-Tech), chứ không còn là
+    # "không cần xác thực".
     verify_internal_api_key(x_internal_api_key)
+
+    has_user_headers = any((x_user_id, x_user_role, x_building_code))
+    if not has_user_headers and config.ALLOW_LEGACY_UNAUTHENTICATED_CHAT:
+        return None
+
     if not x_user_id or not x_user_role or not x_building_code:
         raise HTTPException(status_code=401, detail="Thiếu trusted user headers.")
     return CurrentUser(
