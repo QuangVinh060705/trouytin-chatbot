@@ -17,7 +17,7 @@ app = FastAPI(
 # KHÔNG được mở "*": /api/chatbot/message tiêu thụ quota Groq, mở hết nghĩa là
 # mọi website đều gọi được và làm cạn quota. Khai báo origin được phép qua biến
 # môi trường CHATBOT_CORS_ORIGINS (phân tách bằng dấu phẩy).
-_DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+_DEFAULT_CORS_ORIGINS = "https://tro-uy-tin.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CHATBOT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
