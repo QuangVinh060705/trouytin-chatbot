@@ -1,0 +1,19 @@
+{
+  "gioi_thieu": "TroUyTin là nền tảng tìm phòng trọ, chung cư mini và ở ghép. Người thuê có thể tìm kiếm theo khu vực, giá, diện tích, số người và tiện nghi, xem thông tin chi tiết và liên hệ trực tiếp chủ nhà.",
+  "noi_quy_chung": [
+    "Giờ giấc ra vào tự do, có bảo vệ và khóa cửa an ninh.",
+    "Được phép nuôi thú cưng nhỏ (mèo, chó cảnh) nếu giữ vệ sinh chung.",
+    "Giữ trật tự, không gây ồn sau 22h30 để không ảnh hưởng người xung quanh.",
+    "Bỏ rác đúng nơi quy định và giữ gìn vệ sinh khu vực chung.",
+    "Không tự ý đục phá, sửa chữa kết cấu phòng khi chưa báo chủ nhà."
+  ],
+  "thanh_toan": {
+    "tien_coc": "Thông thường đặt cọc 1 tháng tiền phòng khi ký hợp đồng, hoàn lại khi trả phòng đúng cam kết.",
+    "ky_thanh_toan": "Tiền phòng đóng theo tháng, thường vào đầu mỗi kỳ.",
+    "dich_vu": "Điện, nước, internet, vệ sinh tính theo mức dịch vụ của từng phòng, xem chi tiết trong thông tin phòng."
+  },
+  "hop_dong": "Hợp đồng thuê ký trực tiếp giữa người thuê và chủ nhà, nêu rõ giá thuê, tiền cọc, thời hạn và điều khoản dịch vụ. Người thuê nên đọc kỹ trước khi ký.",
+  "cach_tim_phong": "Nhập nhu cầu bằng ngôn ngữ tự nhiên (ví dụ: 'tìm phòng dưới 5 triệu ở Cầu Giấy') hoặc dùng bộ lọc giá, khu vực, loại phòng, số người, tiện nghi. Hệ thống sẽ gợi ý phòng phù hợp nhất theo điểm match.",
+  "o_ghep": "Với nhu cầu ở ghép, tìm theo từ khóa 'ở ghép', 'ở chung', 'share phòng'. Hệ thống hiển thị các bài đăng còn chỗ trống kèm số người hiện tại và số chỗ còn lại.",
+  "lien_he": "Mọi thắc mắc về phòng, người thuê liên hệ trực tiếp chủ nhà qua thông tin hiển thị trên trang chi tiết phòng, hoặc dùng chức năng nhắn tin trong hệ thống."
+}
