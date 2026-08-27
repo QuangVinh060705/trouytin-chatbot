@@ -37,6 +37,17 @@ def _fetch_documents(building_id=None):
         building_filter = sql.SQL(' AND b."TOA_NHA_ID" = %s')
         params.append(building_id)
 
+    # KHÔNG còn JOIN sang KNOWLEDGE_BASE.
+    #
+    # Bảng đó từng chứa nội dung tri thức dạng text (TIEU_DE / NOI_DUNG /
+    # THE_LOAI / TAGS / IS_ACTIVE) và được nạp thẳng vào RAG ở đây. Nay nó chỉ
+    # còn 5 cột metadata file (KB_ID, OWNER_USER_ID, TEN_FILE, FILE_URL,
+    # CREATED_AT) - các cột text đã bị bỏ ở phía Prop-Tech - nên query cũ chết
+    # với 'column kb.IS_ACTIVE does not exist'.
+    #
+    # Nội dung tài liệu bây giờ vào ChromaDB qua luồng upload
+    # (/api/internal/ingest/document, origin="document"), không đi qua Postgres.
+    # Việc của rebuild chỉ còn là dựng lại thông tin tòa nhà (origin="postgres").
     query = sql.SQL(
         """
         SELECT
@@ -45,22 +56,13 @@ def _fetch_documents(building_id=None):
             b."TEN_TOA_NHA",
             b."DIA_CHI",
             b."SO_TANG",
-            b."MO_TA",
-            kb."KB_ID",
-            kb."TIEU_DE",
-            kb."NOI_DUNG",
-            kb."THE_LOAI",
-            kb."TAGS",
-            kb."UPDATED_AT"
+            b."MO_TA"
         FROM {}."TOA_NHA" AS b
-        LEFT JOIN {}."KNOWLEDGE_BASE" AS kb
-          ON kb."IS_ACTIVE" = TRUE
-         AND (kb."OWNER_USER_ID" IS NULL OR kb."OWNER_USER_ID" = b."OWNER_USER_ID")
         WHERE b."IS_DELETED" = FALSE
         """
-    ).format(sql.Identifier(schema), sql.Identifier(schema))
+    ).format(sql.Identifier(schema))
     query += building_filter
-    query += sql.SQL(' ORDER BY b."TOA_NHA_ID", kb."KB_ID"')
+    query += sql.SQL(' ORDER BY b."TOA_NHA_ID"')
 
     with connect() as connection:
         with connection.cursor() as cursor:
@@ -80,7 +82,6 @@ def _to_documents(rows):
     for row in rows:
         (
             building_id, owner_user_id, building_name, address, floors, description,
-            knowledge_id, title, content, category, tags, updated_at,
         ) = row
         building_code = f"OWNER-{owner_user_id}"
 
@@ -103,24 +104,6 @@ def _to_documents(rows):
                 },
             ))
 
-        if knowledge_id is None or not content or not content.strip():
-            continue
-        documents.append(Document(
-            page_content=(
-                f"KIẾN THỨC NỘI BỘ - {title}\n"
-                f"Danh mục: {category or 'Khác'}\n"
-                f"Tags: {tags or 'không có'}\n"
-                f"{content.strip()}"
-            ),
-            metadata={
-                "building_code": building_code,
-                "source": f"postgres:knowledge:{knowledge_id}",
-                "source_type": "knowledge",
-                "knowledge_id": knowledge_id,
-                "origin": "postgres",
-                "updated_at": updated_at.isoformat() if updated_at else "",
-            },
-        ))
     return documents
 
 
